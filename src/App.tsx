@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  FunctionAnimation,
+  SkinViewer,
+  SwimAnimation,
+  WalkingAnimation,
+  type PlayerAnimation,
+} from 'skinview3d'
 import './App.css'
 
-type SkinSize = 32 | 64 | 128
+type SkinSize = 32 | 64 | 128 | 256 | 512 | 1024 | 2048
 type Mode = 'simple' | 'detailed'
 type Face = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom'
+type AnimationMode = 'walk' | 'swim' | 'sleep'
+type ModelType = 'default' | 'slim'
 
 interface Rect {
   x: number
@@ -48,6 +57,7 @@ interface RegionEdit {
   placement: PlacementState
 }
 
+const OUTPUT_SIZES: SkinSize[] = [32, 64, 128, 256, 512, 1024, 2048]
 const DEFAULT_CROP: CropState = { x: 0, y: 0, w: 100, h: 100 }
 const DEFAULT_ADJUSTMENTS: AdjustmentState = {
   brightness: 100,
@@ -178,6 +188,7 @@ function buildProcessedCanvas(
   image: HTMLImageElement,
   crop: CropState,
   adjustments: AdjustmentState,
+  targetResolution: number,
 ): HTMLCanvasElement {
   const normalized = normalizeCrop(crop)
   const sourceX = (normalized.x / 100) * image.naturalWidth
@@ -186,14 +197,16 @@ function buildProcessedCanvas(
   const sourceH = (normalized.h / 100) * image.naturalHeight
 
   const canvas = document.createElement('canvas')
-  canvas.width = 512
-  canvas.height = 512
+  canvas.width = targetResolution
+  canvas.height = targetResolution
   const ctx = canvas.getContext('2d')
   if (!ctx) {
     return canvas
   }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
   ctx.filter = `brightness(${adjustments.brightness}%) contrast(${adjustments.contrast}%) saturate(${adjustments.saturation}%) blur(${adjustments.blur}px)`
   ctx.drawImage(image, sourceX, sourceY, sourceW, sourceH, 0, 0, canvas.width, canvas.height)
   ctx.filter = 'none'
@@ -213,18 +226,55 @@ function buildProcessedCanvas(
   return canvas
 }
 
+function createAnimation(mode: AnimationMode): PlayerAnimation {
+  if (mode === 'walk') {
+    const animation = new WalkingAnimation()
+    animation.speed = 1.6
+    return animation
+  }
+  if (mode === 'swim') {
+    const animation = new SwimAnimation()
+    animation.speed = 1.3
+    return animation
+  }
+  const animation = new FunctionAnimation((player, progress) => {
+    player.rotation.z = -Math.PI / 2
+    player.position.y = -2
+    const breathing = Math.sin(progress * 2) * 0.05
+    player.skin.head.rotation.x = 0.16 + breathing
+    player.skin.leftArm.rotation.x = -1.4 + breathing
+    player.skin.rightArm.rotation.x = -1.4 - breathing
+    player.skin.leftLeg.rotation.x = 0.08
+    player.skin.rightLeg.rotation.x = -0.08
+  })
+  animation.speed = 0.7
+  return animation
+}
+
 function App() {
   const [sourceImage, setSourceImage] = useState<HTMLImageElement | null>(null)
   const [sourceUrl, setSourceUrl] = useState<string>('')
+  const [sourceMeta, setSourceMeta] = useState<string>('')
   const [mode, setMode] = useState<Mode>('simple')
-  const [skinSize, setSkinSize] = useState<SkinSize>(64)
+  const [skinSize, setSkinSize] = useState<SkinSize>(256)
   const [crop, setCrop] = useState<CropState>(DEFAULT_CROP)
   const [adjustments, setAdjustments] = useState<AdjustmentState>(DEFAULT_ADJUSTMENTS)
   const [placement, setPlacement] = useState<PlacementState>(DEFAULT_PLACEMENT)
   const [regionEdits, setRegionEdits] = useState<Record<string, RegionEdit>>({})
   const [selectedRegionId, setSelectedRegionId] = useState<string>(BASE_TEMPLATE[0].id)
+  const [viewerModel, setViewerModel] = useState<ModelType>('default')
+  const [viewerAnimationMode, setViewerAnimationMode] = useState<AnimationMode>('walk')
+  const [autoRotate, setAutoRotate] = useState<boolean>(true)
   const [status, setStatus] = useState<string>('Upload a source image to start converting.')
+
   const skinCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const viewerHostRef = useRef<HTMLDivElement | null>(null)
+  const viewerRef = useRef<SkinViewer | null>(null)
+  const previewSkinRef = useRef<HTMLCanvasElement | null>(null)
+
+  const processResolution = useMemo(() => {
+    return Math.min(Math.max(skinSize, 1024), 2048)
+  }, [skinSize])
 
   const regions = useMemo(() => scaleTemplate(skinSize), [skinSize])
   const selectedRegion = useMemo(
@@ -241,21 +291,72 @@ function App() {
   }, [sourceUrl])
 
   useEffect(() => {
+    const host = viewerHostRef.current
+    if (!host) {
+      return
+    }
+    const canvas = document.createElement('canvas')
+    host.replaceChildren(canvas)
+
+    const viewer = new SkinViewer({
+      canvas,
+      width: host.clientWidth || 380,
+      height: Math.max(320, Math.round((host.clientWidth || 380) * 1.04)),
+      model: 'default',
+    })
+    viewer.controls.enablePan = false
+    viewer.controls.enableDamping = true
+    viewer.controls.minDistance = 18
+    viewer.controls.maxDistance = 85
+    viewer.controls.rotateSpeed = 0.85
+    viewer.autoRotate = true
+    viewer.autoRotateSpeed = 0.8
+    viewer.animation = createAnimation('walk')
+    viewerRef.current = viewer
+
+    const onResize = () => {
+      const width = host.clientWidth || 380
+      viewer.setSize(width, Math.max(320, Math.round(width * 1.04)))
+    }
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      window.removeEventListener('resize', onResize)
+      viewer.dispose()
+      viewerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer) {
+      return
+    }
+    viewer.autoRotate = autoRotate
+    viewer.animation = createAnimation(viewerAnimationMode)
+  }, [viewerAnimationMode, autoRotate])
+
+  useEffect(() => {
     if (!sourceImage || !skinCanvasRef.current) {
+      const viewer = viewerRef.current
+      if (viewer) {
+        viewer.loadSkin(null)
+      }
       return
     }
 
-    const processed = buildProcessedCanvas(sourceImage, crop, adjustments)
-    const canvas = skinCanvasRef.current
-    canvas.width = skinSize
-    canvas.height = skinSize
-    const ctx = canvas.getContext('2d')
+    const processed = buildProcessedCanvas(sourceImage, crop, adjustments, processResolution)
+    const outputCanvas = skinCanvasRef.current
+    outputCanvas.width = skinSize
+    outputCanvas.height = skinSize
+    const ctx = outputCanvas.getContext('2d')
     if (!ctx) {
       return
     }
 
     ctx.clearRect(0, 0, skinSize, skinSize)
-    ctx.imageSmoothingEnabled = false
+    ctx.imageSmoothingEnabled = skinSize >= 256
+    ctx.imageSmoothingQuality = 'high'
 
     for (const region of regions) {
       const src = faceSlice(region.face, processed.width, processed.height)
@@ -294,7 +395,10 @@ function App() {
         ctx.beginPath()
         ctx.rect(region.rect.x, region.rect.y, region.rect.w, region.rect.h)
         ctx.clip()
-        ctx.translate(region.rect.x + region.rect.w / 2 + offsetX, region.rect.y + region.rect.h / 2 + offsetY)
+        ctx.translate(
+          region.rect.x + region.rect.w / 2 + offsetX,
+          region.rect.y + region.rect.h / 2 + offsetY,
+        )
         ctx.rotate((edit.placement.rotate * Math.PI) / 180)
         ctx.scale(edit.placement.flipX ? -1 : 1, 1)
         ctx.drawImage(processed, sx, sy, sw, sh, -drawW / 2, -drawH / 2, drawW, drawH)
@@ -304,8 +408,8 @@ function App() {
 
     if (selectedRegion) {
       ctx.save()
-      ctx.strokeStyle = '#50fa7b'
-      ctx.lineWidth = Math.max(1, Math.round(skinSize / 64))
+      ctx.strokeStyle = '#4ade80'
+      ctx.lineWidth = Math.max(1, Math.round(skinSize / 256))
       ctx.strokeRect(
         selectedRegion.rect.x + 0.5,
         selectedRegion.rect.y + 0.5,
@@ -314,7 +418,43 @@ function App() {
       )
       ctx.restore()
     }
-  }, [sourceImage, crop, adjustments, skinSize, mode, regions, regionEdits, selectedRegion])
+
+    const previewCanvas = document.createElement('canvas')
+    previewCanvas.width = 64
+    previewCanvas.height = 64
+    const previewCtx = previewCanvas.getContext('2d')
+    if (previewCtx) {
+      previewCtx.imageSmoothingEnabled = false
+      previewCtx.drawImage(outputCanvas, 0, 0, 64, 64)
+      previewSkinRef.current = previewCanvas
+      const viewer = viewerRef.current
+      if (viewer) {
+        viewer.loadSkin(previewCanvas, { model: viewerModel })
+      }
+    }
+  }, [
+    sourceImage,
+    crop,
+    adjustments,
+    processResolution,
+    skinSize,
+    mode,
+    regions,
+    regionEdits,
+    selectedRegion,
+    viewerModel,
+  ])
+
+  const groupedRegions = useMemo(() => {
+    const groups = new Map<string, SkinRegion[]>()
+    for (const region of regions) {
+      if (!groups.has(region.part)) {
+        groups.set(region.part, [])
+      }
+      groups.get(region.part)?.push(region)
+    }
+    return Array.from(groups.entries())
+  }, [regions])
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0]
@@ -336,7 +476,8 @@ function App() {
       }
       setSourceUrl(nextUrl)
       setSourceImage(image)
-      setStatus(`Loaded ${file.name}. Ready to export ${skinSize}x${skinSize} skin.`)
+      setSourceMeta(`${image.naturalWidth}x${image.naturalHeight}`)
+      setStatus(`Loaded ${file.name}. Ready for HD export and 3D preview.`)
     }
     image.onerror = () => {
       URL.revokeObjectURL(nextUrl)
@@ -365,7 +506,7 @@ function App() {
       ...current,
       [selectedRegion.id]: { crop, placement },
     }))
-    setStatus(`Applied detailed mapping to ${selectedRegion.label}.`)
+    setStatus(`Applied detail edit to ${selectedRegion.label}.`)
   }
 
   const clearSelectedDetail = (): void => {
@@ -377,7 +518,7 @@ function App() {
       delete clone[selectedRegion.id]
       return clone
     })
-    setStatus(`Cleared detailed mapping on ${selectedRegion.label}.`)
+    setStatus(`Cleared detail edit on ${selectedRegion.label}.`)
   }
 
   const resetAll = (): void => {
@@ -385,7 +526,9 @@ function App() {
     setAdjustments(DEFAULT_ADJUSTMENTS)
     setPlacement(DEFAULT_PLACEMENT)
     setRegionEdits({})
-    setStatus('Reset crop, filters, and detailed edits.')
+    setMode('simple')
+    setViewerAnimationMode('walk')
+    setStatus('Reset completed. Back to simple mode.')
   }
 
   const downloadSkin = (): void => {
@@ -399,46 +542,44 @@ function App() {
     link.click()
   }
 
-  const groupedRegions = useMemo(() => {
-    const groups = new Map<string, SkinRegion[]>()
-    for (const region of regions) {
-      if (!groups.has(region.part)) {
-        groups.set(region.part, [])
-      }
-      groups.get(region.part)?.push(region)
-    }
-    return Array.from(groups.entries())
-  }, [regions])
-
   return (
     <main className="app">
-      <header className="app-header">
-        <h1>Minecraft Image to Skin Converter</h1>
-        <p>Fast converter for 32 / 64 / 128 skins with simple mode + detailed part editing.</p>
+      <header className="panel hero">
+        <div>
+          <h1>Minecraft Image to Skin</h1>
+          <p>Simple by default. Advanced tools, high resolutions, and 3D animation preview ready.</p>
+        </div>
       </header>
 
-      <section className="panel">
+      <section className="panel compact">
         <label className="upload">
-          <span>Source Image (webp/png/jpeg/jpg)</span>
-          <input type="file" accept=".webp,.png,.jpg,.jpeg,image/webp,image/png,image/jpeg" onChange={handleUpload} />
+          <span>Source image (webp/png/jpeg/jpg)</span>
+          <input
+            type="file"
+            accept=".webp,.png,.jpg,.jpeg,image/webp,image/png,image/jpeg"
+            onChange={handleUpload}
+          />
         </label>
-        <div className="row">
+
+        <div className="controls-row">
           <label>
             Mode
             <select value={mode} onChange={(event) => setMode(event.target.value as Mode)}>
-              <option value="simple">Simple (1-click)</option>
-              <option value="detailed">Detailed (region based)</option>
+              <option value="simple">Simple</option>
+              <option value="detailed">Detailed</option>
             </select>
           </label>
           <label>
-            Skin Size
+            Export size
             <select
               value={skinSize}
               onChange={(event) => setSkinSize(Number(event.target.value) as SkinSize)}
             >
-              <option value={32}>32 x 32</option>
-              <option value={64}>64 x 64</option>
-              <option value={128}>128 x 128</option>
+              {OUTPUT_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size} x {size}
+                </option>
+              ))}
             </select>
           </label>
           <button type="button" onClick={downloadSkin} disabled={!sourceImage}>
@@ -448,14 +589,63 @@ function App() {
             Reset
           </button>
         </div>
+
         <p className="status">{status}</p>
+        <p className="muted">
+          Source: {sourceMeta || '-'} | Processing pipeline: {processResolution}x{processResolution} (HD)
+        </p>
       </section>
 
-      <section className="workspace">
+      <section className="preview-grid">
         <article className="panel">
-          <h2>Source + Crop</h2>
+          <h2>Skin Output</h2>
+          <canvas ref={skinCanvasRef} width={skinSize} height={skinSize} className="skin-canvas" />
+          <p className="muted">Export target: {skinSize}x{skinSize}</p>
+        </article>
+
+        <article className="panel">
+          <h2>3D Preview (360)</h2>
+          <div className="viewer-host" ref={viewerHostRef} />
+          <div className="controls-row">
+            <label>
+              Model
+              <select
+                value={viewerModel}
+                onChange={(event) => setViewerModel(event.target.value as ModelType)}
+              >
+                <option value="default">Steve (Wide)</option>
+                <option value="slim">Alex (Slim)</option>
+              </select>
+            </label>
+            <label>
+              Animation
+              <select
+                value={viewerAnimationMode}
+                onChange={(event) => setViewerAnimationMode(event.target.value as AnimationMode)}
+              >
+                <option value="walk">Walk</option>
+                <option value="swim">Swim</option>
+                <option value="sleep">Sleep</option>
+              </select>
+            </label>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={autoRotate}
+                onChange={(event) => setAutoRotate(event.target.checked)}
+              />
+              Auto rotate
+            </label>
+          </div>
+          <p className="muted">Drag to rotate. Scroll to zoom.</p>
+        </article>
+      </section>
+
+      <details className="panel">
+        <summary>Advanced image tools (crop + smoothing/sharpen + color)</summary>
+        <div className="advanced-wrap">
           <div className="source-preview">
-            {sourceUrl ? <img src={sourceUrl} alt="Source preview" /> : <p>Upload an image to preview and crop.</p>}
+            {sourceUrl ? <img src={sourceUrl} alt="Source preview" /> : <p>Upload an image to preview.</p>}
             {sourceUrl ? (
               <span
                 className="crop-box"
@@ -468,63 +658,105 @@ function App() {
               />
             ) : null}
           </div>
-          <div className="control-grid">
+          <div className="slider-grid">
             <label>
               Crop X ({Math.round(crop.x)}%)
-              <input type="range" min={0} max={95} value={crop.x} onChange={(event) => updateCrop('x', Number(event.target.value))} />
+              <input
+                type="range"
+                min={0}
+                max={95}
+                value={crop.x}
+                onChange={(event) => updateCrop('x', Number(event.target.value))}
+              />
             </label>
             <label>
               Crop Y ({Math.round(crop.y)}%)
-              <input type="range" min={0} max={95} value={crop.y} onChange={(event) => updateCrop('y', Number(event.target.value))} />
+              <input
+                type="range"
+                min={0}
+                max={95}
+                value={crop.y}
+                onChange={(event) => updateCrop('y', Number(event.target.value))}
+              />
             </label>
             <label>
               Crop Width ({Math.round(crop.w)}%)
-              <input type="range" min={5} max={100} value={crop.w} onChange={(event) => updateCrop('w', Number(event.target.value))} />
+              <input
+                type="range"
+                min={5}
+                max={100}
+                value={crop.w}
+                onChange={(event) => updateCrop('w', Number(event.target.value))}
+              />
             </label>
             <label>
               Crop Height ({Math.round(crop.h)}%)
-              <input type="range" min={5} max={100} value={crop.h} onChange={(event) => updateCrop('h', Number(event.target.value))} />
+              <input
+                type="range"
+                min={5}
+                max={100}
+                value={crop.h}
+                onChange={(event) => updateCrop('h', Number(event.target.value))}
+              />
             </label>
-          </div>
-        </article>
-
-        <article className="panel">
-          <h2>Image Adjustments</h2>
-          <div className="control-grid">
             <label>
               Brightness ({adjustments.brightness}%)
-              <input type="range" min={40} max={180} value={adjustments.brightness} onChange={(event) => updateAdjustments('brightness', Number(event.target.value))} />
+              <input
+                type="range"
+                min={40}
+                max={180}
+                value={adjustments.brightness}
+                onChange={(event) => updateAdjustments('brightness', Number(event.target.value))}
+              />
             </label>
             <label>
               Contrast ({adjustments.contrast}%)
-              <input type="range" min={40} max={180} value={adjustments.contrast} onChange={(event) => updateAdjustments('contrast', Number(event.target.value))} />
+              <input
+                type="range"
+                min={40}
+                max={180}
+                value={adjustments.contrast}
+                onChange={(event) => updateAdjustments('contrast', Number(event.target.value))}
+              />
             </label>
             <label>
               Saturation ({adjustments.saturation}%)
-              <input type="range" min={0} max={220} value={adjustments.saturation} onChange={(event) => updateAdjustments('saturation', Number(event.target.value))} />
+              <input
+                type="range"
+                min={0}
+                max={220}
+                value={adjustments.saturation}
+                onChange={(event) => updateAdjustments('saturation', Number(event.target.value))}
+              />
             </label>
             <label>
               Smoothing / Blur ({adjustments.blur.toFixed(1)}px)
-              <input type="range" min={0} max={6} step={0.1} value={adjustments.blur} onChange={(event) => updateAdjustments('blur', Number(event.target.value))} />
+              <input
+                type="range"
+                min={0}
+                max={6}
+                step={0.1}
+                value={adjustments.blur}
+                onChange={(event) => updateAdjustments('blur', Number(event.target.value))}
+              />
             </label>
             <label>
               Sharpen ({Math.round(adjustments.sharpen)}%)
-              <input type="range" min={0} max={100} value={adjustments.sharpen} onChange={(event) => updateAdjustments('sharpen', Number(event.target.value))} />
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={adjustments.sharpen}
+                onChange={(event) => updateAdjustments('sharpen', Number(event.target.value))}
+              />
             </label>
           </div>
-        </article>
-
-        <article className="panel skin-result">
-          <h2>Skin Output</h2>
-          <canvas ref={skinCanvasRef} width={skinSize} height={skinSize} />
-          <p>Active output format: {skinSize}x{skinSize}</p>
-        </article>
-      </section>
+        </div>
+      </details>
 
       {mode === 'detailed' ? (
-        <section className="panel detailed">
-          <h2>Detailed Region Mapper</h2>
-          <p>Select head/body/arms/legs front-back-side region and apply custom crop placement.</p>
+        <details className="panel" open={false}>
+          <summary>Detailed region mapper (front/back/side per body part)</summary>
           <div className="region-groups">
             {groupedRegions.map(([group, groupRegions]) => (
               <div key={group} className="region-group">
@@ -544,29 +776,59 @@ function App() {
               </div>
             ))}
           </div>
-          <div className="control-grid">
+
+          <div className="slider-grid">
             <label>
               Scale ({placement.scale}%)
-              <input type="range" min={25} max={250} value={placement.scale} onChange={(event) => updatePlacement('scale', Number(event.target.value))} />
+              <input
+                type="range"
+                min={25}
+                max={250}
+                value={placement.scale}
+                onChange={(event) => updatePlacement('scale', Number(event.target.value))}
+              />
             </label>
             <label>
               Offset X ({placement.offsetX}%)
-              <input type="range" min={-100} max={100} value={placement.offsetX} onChange={(event) => updatePlacement('offsetX', Number(event.target.value))} />
+              <input
+                type="range"
+                min={-100}
+                max={100}
+                value={placement.offsetX}
+                onChange={(event) => updatePlacement('offsetX', Number(event.target.value))}
+              />
             </label>
             <label>
               Offset Y ({placement.offsetY}%)
-              <input type="range" min={-100} max={100} value={placement.offsetY} onChange={(event) => updatePlacement('offsetY', Number(event.target.value))} />
+              <input
+                type="range"
+                min={-100}
+                max={100}
+                value={placement.offsetY}
+                onChange={(event) => updatePlacement('offsetY', Number(event.target.value))}
+              />
             </label>
             <label>
               Rotation ({placement.rotate}deg)
-              <input type="range" min={-180} max={180} value={placement.rotate} onChange={(event) => updatePlacement('rotate', Number(event.target.value))} />
+              <input
+                type="range"
+                min={-180}
+                max={180}
+                value={placement.rotate}
+                onChange={(event) => updatePlacement('rotate', Number(event.target.value))}
+              />
             </label>
-            <label className="check">
-              <input type="checkbox" checked={placement.flipX} onChange={(event) => updatePlacement('flipX', event.target.checked)} />
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={placement.flipX}
+                onChange={(event) => updatePlacement('flipX', event.target.checked)}
+              />
               Flip Horizontal
             </label>
           </div>
-          <div className="row">
+
+          <div className="controls-row">
             <button type="button" onClick={applyDetailToRegion} disabled={!sourceImage}>
               Apply to Selected Region
             </button>
@@ -574,7 +836,7 @@ function App() {
               Clear Selected Region
             </button>
           </div>
-        </section>
+        </details>
       ) : null}
     </main>
   )

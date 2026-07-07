@@ -5,7 +5,7 @@ Fast web tool that converts regular images into Minecraft skin layouts.
 ## Features
 
 - Input formats: **webp, png, jpeg, jpg**
-- Output formats: **32x32, 64x64, 128x128 PNG**
+- Output formats: **32, 64, 128, 256, 512, 1024, 2048 PNG**
 - **Simple mode:** one-click mapping to full skin
 - **Detailed mode:** region-based mapping (head/body/arms/legs front-back-side)
 - Crop area selection
@@ -13,6 +13,11 @@ Fast web tool that converts regular images into Minecraft skin layouts.
   - smoothing (blur)
   - sharpening
   - brightness/contrast/saturation
+- 3D preview panel with:
+  - 360 degree rotate + zoom
+  - animations: walk, swim, sleep
+  - model switch: Steve (wide) / Alex (slim)
+- Advanced controls are collapsed by default for a cleaner UI
 - Client-side processing (no backend required)
 
 ## Local development
