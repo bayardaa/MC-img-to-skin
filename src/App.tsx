@@ -57,6 +57,18 @@ interface RegionEdit {
   placement: PlacementState
 }
 
+interface DragPoint {
+  x: number
+  y: number
+}
+
+interface ImageFrame {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 const OUTPUT_SIZES: SkinSize[] = [32, 64, 128, 256, 512, 1024, 2048]
 const DEFAULT_CROP: CropState = { x: 0, y: 0, w: 100, h: 100 }
 const DEFAULT_ADJUSTMENTS: AdjustmentState = {
@@ -266,11 +278,16 @@ function App() {
   const [viewerAnimationMode, setViewerAnimationMode] = useState<AnimationMode>('walk')
   const [autoRotate, setAutoRotate] = useState<boolean>(true)
   const [status, setStatus] = useState<string>('Upload a source image to start converting.')
+  const [dragStart, setDragStart] = useState<DragPoint | null>(null)
+  const [dragCurrent, setDragCurrent] = useState<DragPoint | null>(null)
+  const [imageFrame, setImageFrame] = useState<ImageFrame | null>(null)
 
   const skinCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewerHostRef = useRef<HTMLDivElement | null>(null)
   const viewerRef = useRef<SkinViewer | null>(null)
   const previewSkinRef = useRef<HTMLCanvasElement | null>(null)
+  const sourcePreviewRef = useRef<HTMLDivElement | null>(null)
+  const sourcePreviewImageRef = useRef<HTMLImageElement | null>(null)
 
   const processResolution = useMemo(() => {
     return Math.min(Math.max(skinSize, 1024), 2048)
@@ -455,6 +472,110 @@ function App() {
     }
     return Array.from(groups.entries())
   }, [regions])
+
+  const refreshImageFrame = (): void => {
+    const wrapper = sourcePreviewRef.current
+    const image = sourcePreviewImageRef.current
+    if (!wrapper || !image) {
+      setImageFrame(null)
+      return
+    }
+    const wrapperRect = wrapper.getBoundingClientRect()
+    const imageRect = image.getBoundingClientRect()
+    if (wrapperRect.width === 0 || wrapperRect.height === 0) {
+      setImageFrame(null)
+      return
+    }
+    setImageFrame({
+      left: imageRect.left - wrapperRect.left,
+      top: imageRect.top - wrapperRect.top,
+      width: imageRect.width,
+      height: imageRect.height,
+    })
+  }
+
+  useEffect(() => {
+    if (!sourceUrl) {
+      setImageFrame(null)
+      return
+    }
+    const run = (): void => refreshImageFrame()
+    run()
+    window.addEventListener('resize', run)
+    return () => window.removeEventListener('resize', run)
+  }, [sourceUrl])
+
+  const getPointerCropPoint = (clientX: number, clientY: number): DragPoint | null => {
+    const image = sourcePreviewImageRef.current
+    if (!image) {
+      return null
+    }
+    const rect = image.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null
+    }
+    return {
+      x: clamp(((clientX - rect.left) / rect.width) * 100, 0, 100),
+      y: clamp(((clientY - rect.top) / rect.height) * 100, 0, 100),
+    }
+  }
+
+  const cropFromPoints = (start: DragPoint, end: DragPoint): CropState => {
+    const x = Math.min(start.x, end.x)
+    const y = Math.min(start.y, end.y)
+    const w = Math.max(5, Math.abs(end.x - start.x))
+    const h = Math.max(5, Math.abs(end.y - start.y))
+    return normalizeCrop({ x, y, w, h })
+  }
+
+  const dragCrop = useMemo(() => {
+    if (!dragStart || !dragCurrent) {
+      return crop
+    }
+    return cropFromPoints(dragStart, dragCurrent)
+  }, [dragStart, dragCurrent, crop])
+
+  const handlePreviewPointerDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ): void => {
+    if (!sourceUrl) {
+      return
+    }
+    const point = getPointerCropPoint(event.clientX, event.clientY)
+    if (!point) {
+      return
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setDragStart(point)
+    setDragCurrent(point)
+  }
+
+  const handlePreviewPointerMove = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ): void => {
+    if (!dragStart) {
+      return
+    }
+    const point = getPointerCropPoint(event.clientX, event.clientY)
+    if (!point) {
+      return
+    }
+    setDragCurrent(point)
+  }
+
+  const finishPointerSelection = (): void => {
+    if (dragStart && dragCurrent) {
+      const nextCrop = cropFromPoints(dragStart, dragCurrent)
+      setCrop(nextCrop)
+      setStatus(
+        `Area selected: X ${Math.round(nextCrop.x)}% / Y ${Math.round(
+          nextCrop.y,
+        )}% / W ${Math.round(nextCrop.w)}% / H ${Math.round(nextCrop.h)}%`,
+      )
+    }
+    setDragStart(null)
+    setDragCurrent(null)
+  }
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0]
@@ -644,23 +765,40 @@ function App() {
       <details className="panel">
         <summary>Advanced image tools (crop + smoothing/sharpen + color)</summary>
         <div className="advanced-wrap">
-          <div className="source-preview">
-            {sourceUrl ? <img src={sourceUrl} alt="Source preview" /> : <p>Upload an image to preview.</p>}
-            {sourceUrl ? (
-              <span
-                className="crop-box"
-                style={{
-                  left: `${crop.x}%`,
-                  top: `${crop.y}%`,
-                  width: `${crop.w}%`,
-                  height: `${crop.h}%`,
-                }}
-              />
-            ) : null}
-          </div>
+        <div
+          className={`source-preview ${sourceUrl ? 'has-image' : ''}`}
+          ref={sourcePreviewRef}
+          onPointerDown={handlePreviewPointerDown}
+          onPointerMove={handlePreviewPointerMove}
+          onPointerUp={finishPointerSelection}
+          onPointerCancel={finishPointerSelection}
+        >
+          {sourceUrl ? (
+            <img
+              src={sourceUrl}
+              alt="Source preview"
+              ref={sourcePreviewImageRef}
+              onLoad={refreshImageFrame}
+            />
+          ) : (
+            <p>Upload an image to preview.</p>
+          )}
+          {sourceUrl ? (
+            <span
+              className="crop-box"
+              style={{
+                left: `${(imageFrame?.left ?? 0) + (dragCrop.x / 100) * (imageFrame?.width ?? 0)}px`,
+                top: `${(imageFrame?.top ?? 0) + (dragCrop.y / 100) * (imageFrame?.height ?? 0)}px`,
+                width: `${(dragCrop.w / 100) * (imageFrame?.width ?? 0)}px`,
+                height: `${(dragCrop.h / 100) * (imageFrame?.height ?? 0)}px`,
+              }}
+            />
+          ) : null}
+        </div>
           <div className="slider-grid">
-            <label>
-              Crop X ({Math.round(crop.x)}%)
+          <p className="muted">Tip: Drag directly on the image to select crop area.</p>
+          <label>
+            Crop X ({Math.round(crop.x)}%)
               <input
                 type="range"
                 min={0}

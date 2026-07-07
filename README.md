@@ -10,6 +10,7 @@ Fast web tool that converts regular images into Minecraft skin layouts.
 - **Detailed mode:** region-based mapping (head/body/arms/legs front-back-side)
 - Crop area selection
 - Optional image controls:
+  - direct drag-to-select crop area on image
   - smoothing (blur)
   - sharpening
   - brightness/contrast/saturation
